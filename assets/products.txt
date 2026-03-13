@@ -1,0 +1,5 @@
+name,price,quantity,source
+Apple,100,3,USA
+Banana,200,5,India
+Orange,100,20,India
+Tomato,90,10,Local
