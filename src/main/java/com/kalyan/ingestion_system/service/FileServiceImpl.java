@@ -3,9 +3,11 @@ package com.kalyan.ingestion_system.service;
 import com.kalyan.ingestion_system.dto.FileUploadResponseDTO;
 import com.kalyan.ingestion_system.dto.ProductRowDTO;
 import com.kalyan.ingestion_system.model.FileMetadata;
+import com.kalyan.ingestion_system.model.ProcessingAudit;
 import com.kalyan.ingestion_system.repository.FileMetadataRepository;
+import com.kalyan.ingestion_system.repository.ProcessingAuditRepository;
+import com.kalyan.ingestion_system.util.FileHashUtil;
 import com.kalyan.ingestion_system.util.FileParser;
-import com.kalyan.ingestion_system.util.FileValidator;
 import com.kalyan.ingestion_system.util.RowValidator;
 import lombok.RequiredArgsConstructor;
 import org.springframework.scheduling.annotation.Async;
@@ -13,35 +15,61 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
 public class FileServiceImpl implements FileService {
-
+    private final ProcessingAuditRepository processingAuditRepository;
     private final FileMetadataRepository metadataRepository;
     private final ProductService productService;
 
     @Override
     public FileUploadResponseDTO uploadFile(MultipartFile file) {
 
-        String fileName = file.getOriginalFilename();
+        // checking emty file
+        if (file == null || file.isEmpty()) {
+            throw new IllegalStateException("Uploaded file is empty");
+        }
 
-        FileValidator.validateFileType(fileName);
+        String fileName = file.getOriginalFilename() != null
+                ? file.getOriginalFilename()
+                : "unknown_file";
 
+        String hash;
+
+        try {
+            hash = FileHashUtil.generateHash(file.getInputStream());
+        } catch (IOException e) {
+            throw new RuntimeException("Failed to read uploaded file", e);
+        }
+
+        // chekcing duplicate files
+        Optional<FileMetadata> existing = metadataRepository.findByFileHash(hash);
+
+        if (existing.isPresent()) {
+            throw new IllegalStateException("File already uploaded");
+        }
+
+        // save metadata
         FileMetadata metadata = new FileMetadata();
 
+        metadata.setFileHash(hash);
         metadata.setFileName(fileName);
         metadata.setStatus("PENDING");
         metadata.setCreatedAt(LocalDateTime.now());
 
         metadata = metadataRepository.save(metadata);
 
+        //  async processing
         processAsync(file, metadata.getId());
 
+        // showing response
         FileUploadResponseDTO response = new FileUploadResponseDTO();
 
         response.setFileId(metadata.getId());
@@ -50,65 +78,81 @@ public class FileServiceImpl implements FileService {
 
         return response;
     }
-@Async
-public void processAsync(MultipartFile file, Long fileId) {
 
-    int successCount = 0;
+    @Async
+    public void processAsync(MultipartFile file, Long fileId) {
 
-    try {
+        int successCount = 0;
+        int failureCount = 0;
+        int rowNumber = 1;
 
-        BufferedReader reader =
-                new BufferedReader(new InputStreamReader(file.getInputStream()));
+        try {
 
-        reader.readLine();
+            BufferedReader reader = new BufferedReader(new InputStreamReader(file.getInputStream()));
 
-        String line;
+            reader.readLine(); // skip header
 
-        List<ProductRowDTO> batch = new ArrayList<>();
+            String line;
 
-        while ((line = reader.readLine()) != null) {
+            List<ProductRowDTO> batch = new ArrayList<>();
 
-            String[] columns = line.split(",");
+            while ((line = reader.readLine()) != null) {
 
-            RowValidator.validate(columns);
+                rowNumber++;
 
-            ProductRowDTO dto = FileParser.parse(line);
+                try {
 
-            batch.add(dto);
+                    String[] columns = line.split(",");
 
-            successCount++;
+                    RowValidator.validate(columns);
 
-            if (batch.size() == 100) {
+                    ProductRowDTO dto = FileParser.parse(line);
 
-                productService.saveBatch(batch);
+                    batch.add(dto);
 
-                batch.clear();
+                    successCount++;
+
+                    if (batch.size() == 100) {
+
+                        productService.saveBatch(batch);
+                        batch.clear();
+                    }
+
+                } catch (Exception rowError) {
+
+                    failureCount++;
+
+                    ProcessingAudit audit = new ProcessingAudit();
+
+                    audit.setFileId(fileId);
+                    audit.setMessage("Row " + rowNumber + " failed: " + rowError.getMessage());
+                    audit.setCreatedAt(LocalDateTime.now());
+
+                    processingAuditRepository.save(audit);
+                }
             }
+
+            if (!batch.isEmpty()) {
+                productService.saveBatch(batch);
+            }
+
+            int total = successCount + failureCount;
+
+            FileMetadata metadata = metadataRepository.findById(fileId).get();
+
+            metadata.setStatus("SUCCESS");
+            metadata.setSuccessRecords(successCount);
+            metadata.setFailedRecords(failureCount);
+            metadata.setTotalRecords(total);
+
+            metadataRepository.save(metadata);
+
+        } catch (Exception e) {
+
+            FileMetadata metadata = metadataRepository.findById(fileId).get();
+            metadata.setStatus("FAILED");
+
+            metadataRepository.save(metadata);
         }
-
-        if (!batch.isEmpty()) {
-            productService.saveBatch(batch);
-        }
-
-        // ⭐ ADD THIS PART
-
-        FileMetadata metadata = metadataRepository.findById(fileId).get();
-
-        metadata.setStatus("SUCCESS");
-        metadata.setSuccessRecords(successCount);
-        metadata.setTotalRecords(successCount);
-
-        metadataRepository.save(metadata);
-
-    } catch (Exception e) {
-
-        e.printStackTrace();
-
-        FileMetadata metadata = metadataRepository.findById(fileId).get();
-
-        metadata.setStatus("FAILED");
-
-        metadataRepository.save(metadata);
     }
-}
 }

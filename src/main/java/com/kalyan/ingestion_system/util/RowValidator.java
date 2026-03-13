@@ -13,6 +13,17 @@ public class RowValidator {
         if (columns[0].isEmpty())
             throw new InvalidRowException("Name empty");
 
-    }
+        double price = Double.parseDouble(columns[1]);
 
+        if (price <= 0)
+            throw new InvalidRowException("Invalid price");
+
+        int quantity = Integer.parseInt(columns[2]);
+
+        if (quantity <= 0)
+            throw new InvalidRowException("Invalid quantity");
+
+        if (columns[3].isEmpty())
+            throw new InvalidRowException("Source empty");
+    }
 }
