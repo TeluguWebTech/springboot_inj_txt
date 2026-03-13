@@ -66,7 +66,7 @@ public class FileServiceImpl implements FileService {
 
         metadata = metadataRepository.save(metadata);
 
-        //  async processing
+        // async processing
         processAsync(file, metadata.getId());
 
         // showing response
@@ -80,6 +80,7 @@ public class FileServiceImpl implements FileService {
     }
 
     @Async
+
     public void processAsync(MultipartFile file, Long fileId) {
 
         int successCount = 0;
@@ -102,7 +103,7 @@ public class FileServiceImpl implements FileService {
 
                 try {
 
-                    String[] columns = line.split(",");
+                    String[] columns = line.split(",", -1);
 
                     RowValidator.validate(columns);
 
@@ -113,7 +114,6 @@ public class FileServiceImpl implements FileService {
                     successCount++;
 
                     if (batch.size() == 100) {
-
                         productService.saveBatch(batch);
                         batch.clear();
                     }
@@ -138,18 +138,28 @@ public class FileServiceImpl implements FileService {
 
             int total = successCount + failureCount;
 
-            FileMetadata metadata = metadataRepository.findById(fileId).get();
+            FileMetadata metadata = metadataRepository
+                    .findById(fileId)
+                    .orElseThrow(() -> new RuntimeException("File metadata not found"));
 
-            metadata.setStatus("SUCCESS");
             metadata.setSuccessRecords(successCount);
             metadata.setFailedRecords(failureCount);
             metadata.setTotalRecords(total);
+
+            if (failureCount > 0) {
+                metadata.setStatus("FAILED");
+            } else {
+                metadata.setStatus("SUCCESS");
+            }
 
             metadataRepository.save(metadata);
 
         } catch (Exception e) {
 
-            FileMetadata metadata = metadataRepository.findById(fileId).get();
+            FileMetadata metadata = metadataRepository
+                    .findById(fileId)
+                    .orElseThrow(() -> new RuntimeException("File metadata not found"));
+
             metadata.setStatus("FAILED");
 
             metadataRepository.save(metadata);
