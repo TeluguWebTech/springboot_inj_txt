@@ -8,6 +8,7 @@ import com.kalyan.ingestion_system.repository.FileMetadataRepository;
 import com.kalyan.ingestion_system.repository.ProcessingAuditRepository;
 import com.kalyan.ingestion_system.util.FileHashUtil;
 import com.kalyan.ingestion_system.util.FileParser;
+import com.kalyan.ingestion_system.util.HeaderValidator;
 import com.kalyan.ingestion_system.util.RowValidator;
 import lombok.RequiredArgsConstructor;
 import org.springframework.scheduling.annotation.Async;
@@ -25,6 +26,7 @@ import java.util.Optional;
 @Service
 @RequiredArgsConstructor
 public class FileServiceImpl implements FileService {
+
     private final ProcessingAuditRepository processingAuditRepository;
     private final FileMetadataRepository metadataRepository;
     private final ProductService productService;
@@ -32,7 +34,6 @@ public class FileServiceImpl implements FileService {
     @Override
     public FileUploadResponseDTO uploadFile(MultipartFile file) {
 
-        // checking emty file
         if (file == null || file.isEmpty()) {
             throw new IllegalStateException("Uploaded file is empty");
         }
@@ -48,7 +49,6 @@ public class FileServiceImpl implements FileService {
         } catch (IOException e) {
             throw new RuntimeException("Failed to read uploaded file", e);
         }
-
         // chekcing duplicate files
         Optional<FileMetadata> existing = metadataRepository.findByFileHash(hash);
 
@@ -68,7 +68,7 @@ public class FileServiceImpl implements FileService {
 
         // async processing
         processAsync(file, metadata.getId());
-
+        
         // showing response
         FileUploadResponseDTO response = new FileUploadResponseDTO();
 
@@ -80,24 +80,54 @@ public class FileServiceImpl implements FileService {
     }
 
     @Async
-
     public void processAsync(MultipartFile file, Long fileId) {
 
         int successCount = 0;
         int failureCount = 0;
         int rowNumber = 1;
+        int trailerCount = -1;
 
         try {
 
-            BufferedReader reader = new BufferedReader(new InputStreamReader(file.getInputStream()));
+            BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(file.getInputStream())
+            );
 
-            reader.readLine(); // skip header
+            // reader.readLine(); // skip header
+            // point to remember, what if no header?
+            // newly added (header)
+            String header = reader.readLine();
+            HeaderValidator.validate(header);
+
+            // checking column count
+            String[] headerColumns = header.split(",");
+            if (headerColumns.length != 4) {
+                throw new RuntimeException("Invalid header column count");
+            }
 
             String line;
-
             List<ProductRowDTO> batch = new ArrayList<>();
 
+            // processing files
             while ((line = reader.readLine()) != null) {
+
+                // TRAILER DETECTION
+                if (line.startsWith("TRAILER|")) {
+
+                    String[] parts = line.split("\\|");
+
+                    if (parts.length != 2) {
+                        throw new RuntimeException("Invalid trailer format");
+                    }
+
+                    try {
+                        trailerCount = Integer.parseInt(parts[1].trim());
+                    } catch (NumberFormatException e) {
+                        throw new RuntimeException("Invalid trailer count");
+                    }
+
+                    break;
+                }
 
                 rowNumber++;
 
@@ -121,9 +151,8 @@ public class FileServiceImpl implements FileService {
                 } catch (Exception rowError) {
 
                     failureCount++;
-
+                    
                     ProcessingAudit audit = new ProcessingAudit();
-
                     audit.setFileId(fileId);
                     audit.setMessage("Row " + rowNumber + " failed: " + rowError.getMessage());
                     audit.setCreatedAt(LocalDateTime.now());
@@ -132,14 +161,26 @@ public class FileServiceImpl implements FileService {
                 }
             }
 
+            // save remaining batch
             if (!batch.isEmpty()) {
                 productService.saveBatch(batch);
             }
 
             int total = successCount + failureCount;
 
-            FileMetadata metadata = metadataRepository
-                    .findById(fileId)
+            // TRAILER VALIDATION
+            if (trailerCount == -1) {
+                throw new RuntimeException("Trailer missing");
+            }
+
+            if (total != trailerCount) {
+                throw new RuntimeException(
+                        "Trailer count mismatch. Expected: " + trailerCount + " but found: " + total
+                );
+            }
+
+            // UPDATE METADATA
+            FileMetadata metadata = metadataRepository.findById(fileId)
                     .orElseThrow(() -> new RuntimeException("File metadata not found"));
 
             metadata.setSuccessRecords(successCount);
@@ -156,11 +197,23 @@ public class FileServiceImpl implements FileService {
 
         } catch (Exception e) {
 
-            FileMetadata metadata = metadataRepository
-                    .findById(fileId)
+            // checking error & updating to audit_processing
+            ProcessingAudit audit = new ProcessingAudit();
+
+            audit.setFileId(fileId);
+            audit.setMessage("File validation failed: " + e.getMessage());
+            audit.setCreatedAt(LocalDateTime.now());
+
+            processingAuditRepository.save(audit);
+
+            // update file status
+            FileMetadata metadata = metadataRepository.findById(fileId)
                     .orElseThrow(() -> new RuntimeException("File metadata not found"));
 
             metadata.setStatus("FAILED");
+            metadata.setSuccessRecords(0);
+            metadata.setFailedRecords(0);
+            metadata.setTotalRecords(0);
 
             metadataRepository.save(metadata);
         }
