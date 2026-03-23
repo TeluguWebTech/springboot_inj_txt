@@ -14,6 +14,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.beans.factory.annotation.Value;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -25,11 +26,15 @@ import java.util.Optional;
 
 @Service
 @RequiredArgsConstructor
+
 public class FileServiceImpl implements FileService {
 
     private final ProcessingAuditRepository processingAuditRepository;
     private final FileMetadataRepository metadataRepository;
     private final ProductService productService;
+
+    @Value("${file.processing.failure-threshold}")
+    private int failureThreshold;
 
     @Override
     public FileUploadResponseDTO uploadFile(MultipartFile file) {
@@ -68,7 +73,7 @@ public class FileServiceImpl implements FileService {
 
         // async processing
         processAsync(file, metadata.getId());
-        
+
         // showing response
         FileUploadResponseDTO response = new FileUploadResponseDTO();
 
@@ -87,11 +92,12 @@ public class FileServiceImpl implements FileService {
         int rowNumber = 1;
         int trailerCount = -1;
 
+        boolean isFailed = false;
+
         try {
 
             BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(file.getInputStream())
-            );
+                    new InputStreamReader(file.getInputStream()));
 
             // reader.readLine(); // skip header
             // point to remember, what if no header?
@@ -144,14 +150,14 @@ public class FileServiceImpl implements FileService {
                     successCount++;
 
                     if (batch.size() == 100) {
-                        productService.saveBatch(batch);
+                        productService.saveBatch(batch, fileId);
                         batch.clear();
                     }
 
                 } catch (Exception rowError) {
 
                     failureCount++;
-                    
+
                     ProcessingAudit audit = new ProcessingAudit();
                     audit.setFileId(fileId);
                     audit.setMessage("Row " + rowNumber + " failed: " + rowError.getMessage());
@@ -163,7 +169,8 @@ public class FileServiceImpl implements FileService {
 
             // save remaining batch
             if (!batch.isEmpty()) {
-                productService.saveBatch(batch);
+                // productService.saveBatch(batch);
+                productService.saveBatch(batch, fileId);
             }
 
             int total = successCount + failureCount;
@@ -175,8 +182,7 @@ public class FileServiceImpl implements FileService {
 
             if (total != trailerCount) {
                 throw new RuntimeException(
-                        "Trailer count mismatch. Expected: " + trailerCount + " but found: " + total
-                );
+                        "Trailer count mismatch. Expected: " + trailerCount + " but found: " + total);
             }
 
             // UPDATE METADATA
@@ -187,16 +193,35 @@ public class FileServiceImpl implements FileService {
             metadata.setFailedRecords(failureCount);
             metadata.setTotalRecords(total);
 
-            if (failureCount > 0) {
-                metadata.setStatus("FAILED");
-            } else {
+            // if (failureCount > 0) {
+            // metadata.setStatus("FAILED");
+            // } else {
+            // metadata.setStatus("SUCCESS");
+            // }
+            // Threshold (with dynamic count)
+            if (failureCount == 0) {
                 metadata.setStatus("SUCCESS");
+
+            } else if (failureCount <= failureThreshold) {
+                metadata.setStatus("FAILED");
+                isFailed = true;
+
+            } else {
+                metadata.setStatus("FAILED");
+                isFailed = true;
+
+                ProcessingAudit audit = new ProcessingAudit();
+                audit.setFileId(fileId);
+                audit.setMessage("HIGH ERROR COUNT: Threshold exceeded (" + failureCount + ")");
+                audit.setCreatedAt(LocalDateTime.now());
+
+                processingAuditRepository.save(audit);
             }
 
             metadataRepository.save(metadata);
 
         } catch (Exception e) {
-
+            isFailed = true;
             // checking error & updating to audit_processing
             ProcessingAudit audit = new ProcessingAudit();
 
@@ -216,6 +241,17 @@ public class FileServiceImpl implements FileService {
             metadata.setTotalRecords(0);
 
             metadataRepository.save(metadata);
+        }
+        if (isFailed) {
+
+            productService.deleteByFileId(fileId);
+
+            ProcessingAudit audit = new ProcessingAudit();
+            audit.setFileId(fileId);
+            audit.setMessage("Rollback performed: All records deleted");
+            audit.setCreatedAt(LocalDateTime.now());
+
+            processingAuditRepository.save(audit);
         }
     }
 }

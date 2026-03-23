@@ -18,4 +18,8 @@ public class Product {
     private Integer quantity;
 
     private String source;
+
+    // threshold validation
+    @Column(name = "file_id")
+    private Long fileId;
 }

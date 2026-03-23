@@ -13,4 +13,5 @@ public class ProductRowDTO {
     private Integer quantity;
 
     private String source;
+
 }
