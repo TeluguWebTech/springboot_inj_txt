@@ -19,7 +19,7 @@ public class Product {
 
     private String source;
 
-    // threshold validation
-    @Column(name = "file_id")
-    private Long fileId;
+    // threshold rollback validation
+    // @Column(name = "file_id")
+    // private Long fileId;
 }
