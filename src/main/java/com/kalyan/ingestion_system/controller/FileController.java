@@ -1,24 +1,28 @@
-
 package com.kalyan.ingestion_system.controller;
 
-
-import com.kalyan.ingestion_system.dto.FileUploadResponseDTO;
-import com.kalyan.ingestion_system.service.FileService;
-import lombok.RequiredArgsConstructor;
+import com.kalyan.ingestion_system.model.FileMetadata;
+import com.kalyan.ingestion_system.repository.FileMetadataRepository;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
-import org.springframework.web.multipart.MultipartFile;
+
+import java.util.List;
 
 @RestController
 @RequestMapping("/files")
-@RequiredArgsConstructor
 public class FileController {
 
-    private final FileService fileService;
+    @Autowired
+    private FileMetadataRepository repository;
 
-    @PostMapping("/upload")
-    public FileUploadResponseDTO uploadFile(@RequestParam MultipartFile file) {
-
-        return fileService.uploadFile(file);
+    //  GET ALL FILES
+    @GetMapping
+    public List<FileMetadata> getAllFiles() {
+        return repository.findAll();
     }
 
+    //  GET BY ID
+    @GetMapping("/{id}")
+    public FileMetadata getFile(@PathVariable Long id) {
+        return repository.findById(id).orElse(null);
+    }
 }

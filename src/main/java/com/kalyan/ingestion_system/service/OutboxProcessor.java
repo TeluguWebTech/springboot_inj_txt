@@ -1,5 +1,7 @@
 package com.kalyan.ingestion_system.service;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kalyan.ingestion_system.dto.FileEventDTO;
 import com.kalyan.ingestion_system.model.OutboxEvent;
 import com.kalyan.ingestion_system.repository.OutboxRepository;
 import lombok.RequiredArgsConstructor;
@@ -14,7 +16,7 @@ import java.util.List;
 public class OutboxProcessor {
 
     private final OutboxRepository outboxRepository;
-    private final KafkaTemplate<String, String> kafkaTemplate;
+    private final KafkaTemplate<String, Object> kafkaTemplate;
 
     @Scheduled(fixedRate = 5000)
     public void processOutbox() {
@@ -25,16 +27,19 @@ public class OutboxProcessor {
 
             try {
                 // send to Kafka
-                kafkaTemplate.send("file-events", event.getPayload());
+                ObjectMapper objectMapper = new ObjectMapper();
+                FileEventDTO dto = objectMapper.readValue(event.getPayload(), FileEventDTO.class);
+
+                kafkaTemplate.send("file-events", dto);
 
                 // mark processed
                 event.setStatus("PROCESSED");
                 outboxRepository.save(event);
 
-                System.out.println("✅ Sent to Kafka: " + event.getPayload());
+                System.out.println(" Sent to Kafka: " + event.getPayload());
 
             } catch (Exception e) {
-                System.out.println("❌ Kafka failed for event: " + event.getId());
+                System.out.println(" Kafka failed for event: " + event.getId());
             }
         }
     }

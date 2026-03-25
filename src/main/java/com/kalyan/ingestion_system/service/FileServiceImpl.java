@@ -25,6 +25,10 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
+// json
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.kalyan.ingestion_system.dto.FileEventDTO;
+
 @Service
 @RequiredArgsConstructor
 public class FileServiceImpl implements FileService {
@@ -176,15 +180,28 @@ public class FileServiceImpl implements FileService {
 
             metadataRepository.save(metadata);
 
-            // 🔥 OUTBOX EVENT (CORRECT PLACE)
+            // OUTBOX EVENT (JSON VERSION)
             OutboxEvent event = new OutboxEvent();
             event.setEventType("FILE_PROCESSED");
-            event.setPayload(
-                    "FileId=" + fileId +
-                    ", Success=" + successCount +
-                    ", Failed=" + failureCount +
-                    ", Status=" + metadata.getStatus()
-            );
+
+            // ✅ JSON conversion
+            ObjectMapper objectMapper = new ObjectMapper();
+
+            FileEventDTO eventDTO = new FileEventDTO(
+                    fileId,
+                    successCount,
+                    failureCount,
+                    metadata.getStatus());
+
+            String payload;
+            try {
+                payload = objectMapper.writeValueAsString(eventDTO);
+            } catch (Exception ex) {
+                throw new RuntimeException("Failed to convert event to JSON", ex);
+            }
+
+            event.setPayload(payload);
+
             event.setStatus("NEW");
             event.setCreatedAt(LocalDateTime.now());
 
